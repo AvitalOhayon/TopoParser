@@ -1,6 +1,6 @@
 # Topology Parser
 
-This project is designed to parse Infiniband topology files and output the results in a clear, structured format. The parsed data is also saved as a JSON file for future reference.
+This project is designed to parse Infiniband topology files and output the results in a clear, structured format.
 
 ## Features
 
