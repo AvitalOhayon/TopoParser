@@ -1,18 +1,20 @@
-import re
-from collections import defaultdict, deque
-import threading
-import json
 import os
+import re
+import threading
 import time
+import json
+from collections import defaultdict, deque
+from threading import Lock
 
 
 class TopologyParser:
     """ Parsing topology file and storing as graph, considering multiple HCA connections."""
 
     def __init__(self):
-        self.devices = defaultdict(lambda: {'type': None, 'connections': [], 'sysimgguid': None})
-        self.graph = defaultdict(list)
-        self.edges = []
+        self.topology = defaultdict(lambda: { 'type': None, 'connections': defaultdict(list)})
+
+        self.caguid_map = defaultdict(str)
+        self.switchguid_map = defaultdict(str)
         self.file_name = None
         self.lock = threading.Lock()
         self.progress = 0
@@ -24,7 +26,9 @@ class TopologyParser:
             'switch': re.compile(r'Switch\s+\d+\s+"(S-[\w\d]+)"'),
             'guid': re.compile(r'sysimgguid=([\w\d]+)'),
             'switch_connection': re.compile(r'\[([\d]+)\]\s+"(S|H)-([\w\d]+)"\[\d+\]'),
-            'host_connection': re.compile(r'\[\d+\]\([\w\d]+\)\s+"(S|H)-([\w\d]+)"\[(\d+)\]')
+            'host_connection': re.compile(r'\[\d+\]\([\w\d]+\)\s+"(S|H)-([\w\d]+)"\[(\d+)\]'),
+            'caguid': re.compile(r'caguid=([\w\d]+)'),  # תבנית ל-caguid
+            'switchguid': re.compile(r'switchguid=([\w\d]+)')  # תבנית ל-switchguid
         }
 
     def parse_topology_file(self, file_path: str) -> None:
@@ -42,8 +46,10 @@ class TopologyParser:
             return
 
         self.total_lines = len(file_content)
-        current_device = None
-        last_guid = None
+        current_sysimgguid = None
+        current_type = None
+        current_caguid = None
+        current_switchguid = None
 
         for i, line in enumerate(file_content):
             with self.lock:
@@ -51,50 +57,62 @@ class TopologyParser:
 
             guid_match = self.patterns['guid'].search(line)
             if guid_match:
-                last_guid = guid_match.group(1)
+                current_sysimgguid = guid_match.group(1)
+                continue
+
+            caguid_match = self.patterns['caguid'].search(line)
+            if caguid_match:
+                current_caguid = caguid_match.group(1)
+                current_type = "Host"
+                self.topology[current_sysimgguid]['type'] = current_type
+                continue
+
+            switchguid_match = self.patterns['switchguid'].search(line)
+            if switchguid_match:
+                current_switchguid = switchguid_match.group(1)
+                current_type = "Switch"
+                self.topology[current_sysimgguid]['type'] = current_type
                 continue
 
             for device_type in ['host', 'switch']:
                 match = self.patterns[device_type].search(line)
                 if match:
                     current_device = match.group(1)
-                    self.devices[current_device]['type'] = device_type.capitalize()
-                    self.devices[current_device]['sysimgguid'] = last_guid
+                    if current_device[0] == 'S':
+                        self.switchguid_map[current_device] = current_sysimgguid
+                    else:
+                        self.caguid_map[current_device] = current_sysimgguid
                     break
-            else:
-                if current_device:
-                    if self.devices[current_device]["type"] == "Switch":
-                        connection_match = self.patterns['switch_connection'].search(line)
-                        if connection_match:
-                            port, device_type, connected_id = connection_match.groups()
-                            connected_device = f"{device_type}-{connected_id}"
-                            self.__add_connection(current_device, port, connected_device)
-                    elif self.devices[current_device]["type"] == "Host":
-                        connection_match = self.patterns['host_connection'].search(line)
-                        if connection_match:
-                            device_type, connected_id, port = connection_match.groups()
-                            connected_device = f"{device_type}-{connected_id}"
-                            self.__add_connection(current_device, port, connected_device)
+
+            if current_type and current_sysimgguid:
+                if current_type == "Switch":
+
+                    connection_match = self.patterns['switch_connection'].search(line)
+                    if connection_match:
+                        port, device_type, connected_id = connection_match.groups()
+                        connected_device = f"{device_type}-{connected_id}"
+                        self.__add_connection(current_sysimgguid, current_switchguid, port, connected_device)
+                elif current_type == "Host":
+                    connection_match = self.patterns['host_connection'].search(line)
+                    if connection_match:
+                        device_type, connected_id, port = connection_match.groups()
+                        connected_device = f"{device_type}-{connected_id}"
+                        self.__add_connection(current_sysimgguid, current_caguid, port, connected_device)
 
         self.parsing_complete = True
 
-    def __add_connection(self, device: str, port: str, connected_device: str) -> None:
+    def __add_connection(self, sysimgguid: str, guid: str, port: str, connected_device: str) -> None:
         """
-        Add connection between devices and update graph, considering unique HCA-based connections.
-        :param device: The current device (host or switch).
+        Add connection between devices and update topology, considering unique HCA-based connections.
+        :param sysimgguid: The sysimgguid of the current device (host or switch).
+        :param caguid: The caguid of the HCA or device.
         :param port: The port through which the connection occurs.
         :param connected_device: The connected device (host or switch).
         :return:
         """
-        with self.lock:
-            if (port, connected_device) not in self.devices[device]['connections']:
-                self.devices[device]['connections'].append((port, connected_device))
-                # Add edge with port information to edges list
-                self.edges.append((device, connected_device, port))
-                if connected_device not in self.graph[device]:
-                    self.graph[device].append(connected_device)
-                if device not in self.graph[connected_device]:
-                    self.graph[connected_device].append(device)
+        if (port, connected_device) not in self.topology[sysimgguid]['connections'][guid]:
+            self.topology[sysimgguid]['connections'][guid].append((port, connected_device))
+
 
     def __bfs_topology_order(self):
         """Perform BFS to print devices in order of connectivity.
@@ -103,14 +121,14 @@ class TopologyParser:
         visited = set()
         queue = deque()
 
-        for device, details in self.devices.items():
+        for device, details in self.topology.items():
             if details['type'] == 'Host':
                 queue.append(device)
                 visited.add(device)
                 break
 
         if not queue:
-            for device, details in self.devices.items():
+            for device, details in self.topology.items():
                 if details['type'] == 'Switch':
                     queue.append(device)
                     visited.add(device)
@@ -120,23 +138,32 @@ class TopologyParser:
         while queue:
             device = queue.popleft()
             result.append(device)
-            for neighbor in self.graph[device]:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append(neighbor)
+            for guid, connections in self.topology[device]['connections'].items():
+                for port, connected_device in connections:
+                    if connected_device[0] == 'S':
+                        connected_device = self.switchguid_map[connected_device]
+                    else:
+                        connected_device = self.caguid_map[connected_device]
+                    if connected_device not in visited:
+                        visited.add(connected_device)
+                        queue.append(connected_device)
 
         return result
 
-    def __print_device(self, details):
+    def __print_device(self, sysimgguid, details):
         device_type = details['type']
         print(f"{device_type}:")
-        print(f"  sysimgguid={details['sysimgguid']}")
-        for connection in details['connections']:
-            port, connected_device = connection
-            if 'H' in connected_device:
-                print(f"  Connected to host: {connected_device}, port={port}")
+        print(f"  sysimgguid={sysimgguid}")
+        for guid, connections in details['connections'].items():
+            if device_type == "Switch":
+                print(f"  switchuid={guid}")
             else:
-                print(f"  Connected to switch: {connected_device}, port={port}")
+                print(f"  caguid={guid}")
+            for port, connection in connections:
+                if 'H' in connection:
+                    print(f"  Connected to host: {connection}({self.caguid_map[connection]}), port={port}")
+                else:
+                    print(f"  Connected to switch: {connection}({self.switchguid_map[connection]}), port={port}")
         print()
 
     def print_topology(self) -> None:
@@ -147,38 +174,55 @@ class TopologyParser:
         bfs_order = self.__bfs_topology_order()
 
         for device in bfs_order:
-            details = self.devices[device]
-            self.__print_device(details)
+            details = self.topology[device]
+            self.__print_device(device, details)
 
 
     def save_topology_to_file(self, filename="last_topology.json"):
         """Save the current topology to a file and ensure no old content remains."""
-        try:
-            with open(filename, 'w') as file:
-                json.dump({
-                    'devices': {k: dict(v) for k, v in self.devices.items()},
-                    'graph': dict(self.graph),
-                    'edges': self.edges,
-                    'file_name': self.file_name
-                }, file)
+        lock = Lock()
+        if lock.acquire(timeout=5):
+            try:
+                with open(filename, 'w') as file:
+                    json.dump({
+                        'topology': {k: dict(v) for k, v in self.topology.items()},
+                        'caguid_map': {k: v for k, v in self.caguid_map.items()},
+                        'switchguid_map': {k: v for k, v in self.switchguid_map.items()},
+                        'file_name': self.file_name
+                    }, file)
+            except Exception as e:
+                print(f"Failed to save topology: {e}")
+            lock.release()
             print(f"Topology saved to {filename}")
-        except Exception as e:
-            print(f"Failed to save topology: {e}")
+        else:
+            print("Failed to acquire lock.")
+
 
     def load_topology_from_file(self, filename="last_topology.json"):
         """Load the topology from a file."""
-        try:
-            if os.path.exists(filename):
+
+        if not os.path.exists(filename):
+            print(f"There is no existing topology file at {filename}.")
+
+        lock = Lock()
+        if lock.acquire(timeout=5):
+            try:
                 with open(filename, 'r') as file:
                     data = json.load(file)
-                    self.devices = defaultdict(lambda: {'type': None, 'connections': [], 'sysimgguid': None}, data['devices'])
-                    self.graph = defaultdict(list, data['graph'])
-                    self.edges = data['edges']
+                    self.topology = defaultdict(lambda: {
+                        'type': None,
+                        'connections': defaultdict(list)
+                    }, data.get('topology', {}))
+                    self.caguid_map = data.get('caguid_map', {})
+                    self.switchguid_map = data.get('switchguid_map', {})
                     self.file_name = data.get('file_name', None)
-            else:
-                print(f"There is no existing topology.")
-        except Exception as e:
-            print(f"Failed to load topology: {e}")
+            except Exception as e:
+                print(f"Failed to load topology: {e}")
+            lock.release()
+            print(f"Topology loaded from {filename}")
+        else:
+            print("Failed to acquire lock.")
+
 
     def get_progress(self):
         """Return the current progress and total lines for the progress bar."""

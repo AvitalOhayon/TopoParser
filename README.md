@@ -83,14 +83,17 @@ When you parse a topology file, the output will look similar to this:
 ```
 Topology from file: small_topo_file
 
-Host: sysimgguid=guid1
+Host: 
+  sysimgguid=guid1
   Connected to switch: S-1, port=1
 
-Switch: sysimgguid=guid2
+Switch: 
+  sysimgguid=guid2
   Connected to host: H-1, port=1
   Connected to switch: S-2, port=2
 
-Switch: sysimgguid=guid3
+Switch: 
+  sysimgguid=guid3
   Connected to switch: S-1, port=1
   Connected to host: H-2, port=2
 ```

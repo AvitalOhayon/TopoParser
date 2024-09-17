@@ -23,8 +23,9 @@ def progress_reporter(parser: TopologyParser) -> None:
     :param parser: TopologyParser object
     :return: None
     """
+    print("Accepting and opening the file.")
     while parser.total_lines == 0:
-        time.sleep(0.01)
+        time.sleep(0.05)
 
     with tqdm(total=parser.total_lines, desc="Parsing progress", unit="lines") as pbar:
         last_progress = 0
@@ -54,10 +55,9 @@ def main() -> None:
 
     args = arg_parser.parse_args()
 
-    topo_parser = TopologyParser()
-
-
     if args.file:
+        topo_parser = TopologyParser()
+
         parse_thread = threading.Thread(target=parse_worker, args=(topo_parser, args.file))
         progress_thread = threading.Thread(target=progress_reporter, args=(topo_parser,))
 
@@ -72,14 +72,16 @@ def main() -> None:
 
         print("\nParsing complete. New topology saved.")
     elif args.print:
-        topo_parser.load_topology_from_file()
-        topo_parser.print_topology()
+        topo_parser_2 = TopologyParser()
+        topo_parser_2.load_topology_from_file()
+        topo_parser_2.print_topology()
     else:
         arg_parser.print_help()
 
 
 if __name__ == "__main__":
     main()
+
 
 
 
