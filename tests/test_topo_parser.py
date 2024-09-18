@@ -53,3 +53,4 @@ class TestTopologyParser(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
