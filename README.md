@@ -1,6 +1,7 @@
 # Topology Parser
 
 This project is designed to parse Infiniband topology files and output the results in a clear, structured format. 
+
 ## Features
 
 - Parses Infiniband topology files containing hosts and switches.
